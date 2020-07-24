@@ -27,7 +27,126 @@ AFRAME.registerComponent("floaty-object", {
     this.onGrab = this.onGrab.bind(this);
     this.onRelease = this.onRelease.bind(this);
   },
+  //------------------------------CUSTOM FUNCTIONS FOR MEDIA VIDEO SNAPPING----------------------------------------------
+  initializeMediaVideo() {
+    // To increase performance, currentTick is used to only check for nearby snap targets each 15th tick
+    this.currentTick = 0;
 
+    // Used to keep track of the current snap target to be marked
+    this.currentSnapTarget = 0;
+
+    // Used to directly find out which targets are within the scene, is probably not needed with
+    // an implementation based on physics system
+    this.media_loaders = AFRAME.scenes[0].querySelectorAll("[media-loader]");
+    this.snapObjects = [];
+    for (let i = 0; i < this.media_loaders.length; i++) {
+      // If the object to snap onto has a 3D object
+      if (this.media_loaders[i].object3D != null) {
+        // Check if object is of the desired type
+        if (this.media_loaders[i].object3D.name.substring(0, 10).toLowerCase() == "snapobject") {
+          this.snapObjects.push(this.media_loaders[i]);
+        }
+      }
+    }
+    this.el.updateComponent("floaty-object", { gravitySpeedLimit: 0 });
+
+    this.mediaVideoInitialized = true;
+  },
+
+  snap(toSnap, snapOn) {
+    // Align rotation
+    toSnap.el.object3D.setRotationFromQuaternion(snapOn.object3D.getWorldQuaternion()); //.rotation.copy(snapOn.object3D.);
+    // Align position
+    toSnap.el.object3D.position.copy(snapOn.object3D.getWorldPosition());
+    // Set to same scale
+    toSnap.el.object3D.scale.copy(snapOn.object3D.getWorldScale());
+    // Move slightly to avoid texture tearing
+    toSnap.el.object3D.translateZ(0.002);
+    // Make snap target invisible
+    this.currentSnapTarget.object3DMap.mesh.material.opacity = 0;
+  },
+
+  getClosestSnapObject() {
+    // Finds the snap target closest to the shared media video
+    let closestObject = this.snapObjects[0];
+    for (let snapobject of this.snapObjects) {
+      if (
+        this.el.object3D.getWorldPosition().distanceTo(snapobject.object3D.getWorldPosition()) <
+        this.el.object3D.getWorldPosition().distanceTo(closestObject.object3D.getWorldPosition())
+      ) {
+        closestObject = snapobject;
+      }
+    }
+    return closestObject;
+  },
+
+  updateSnapTarget(closestObject) {
+    // Check if closest object already is colored
+    if (this.currentSnapTarget != closestObject) {
+      // If not, empty list of colored objects, since there should be only one colored object
+      if (this.currentSnapTarget != 0) {
+        this.currentSnapTarget.object3DMap.mesh.material.opacity = 1;
+      }
+      // Mark closest object by changing its opacity
+      closestObject.object3DMap.mesh.material.opacity = 0.5;
+      this.currentSnapTarget = closestObject;
+    }
+  },
+  clearSnapTarget() {
+    if (this.currentSnapTarget != 0) {
+      this.currentSnapTarget.object3DMap.mesh.material.opacity = 1;
+      this.currentSnapTarget = 0;
+    }
+  },
+  snapTargetWithinRange(closestObject) {
+    // A multiplier depending on the size of the snap-object for better snapping range
+    const scaleMultiplier = (closestObject.object3D.scale.x * closestObject.object3D.scale.y) / 2;
+    if (
+      this.el.object3D.getWorldPosition().distanceTo(closestObject.object3D.getWorldPosition()) <
+      0.4 + scaleMultiplier * 0.2
+    ) {
+      return true;
+    }
+    return false;
+  },
+
+  scanSnapObjects() {
+    // Check that there are any snap-objects in the environment
+    if (this.snapObjects.length > 0) {
+      // Get the closest snap object
+      const closestObject = this.getClosestSnapObject();
+      // Check if close enough to snap
+      if (this.snapTargetWithinRange(closestObject)) {
+        this.updateSnapTarget(closestObject);
+      } else {
+        // If no object is close enough, then set objects to normal opacity
+        this.clearSnapTarget();
+      }
+    }
+  },
+  snapIfPossible() {
+    // Check that the object is a video loader.
+    if (this.el.getAttribute("media-video") != null) {
+      // Check if there are any snap objects in the scene
+      const physicsSystem = AFRAME.scenes[0].systems["hubs-systems"].physicsSystem;
+      const coll = physicsSystem.getCollisions(this.el.components["body-helper"].uuid);
+      if (coll.length > 0) {
+        for (let bodyHelperID of coll) {
+          const collision_Element = physicsSystem.bodyUuidToData.get(bodyHelperID).object3D.el;
+          if (collision_Element.object3D.name.substring(0, 10).toLowerCase() == "snapobject") {
+            this.updateSnapTarget(collision_Element);
+            this.snap(this, collision_Element);
+            this.el.setAttribute("pinnable", { pinned: true });
+            this.snapped = true;
+          }
+        }
+      }
+      if (coll.length === 0 || !coll.includes(this.currentSnapTarget.components["body-helper"].uuid)) {
+        this.clearSnapTarget();
+      }
+    }
+  },
+  //----------------------------------------------------------------------------------------------------------
   tick() {
     if (!this.bodyHelper) {
       this.bodyHelper = this.el.components["body-helper"];
@@ -35,10 +154,50 @@ AFRAME.registerComponent("floaty-object", {
 
     const interaction = AFRAME.scenes[0].systems.interaction;
     const isHeld = interaction && interaction.isHeld(this.el);
+    const physicsSystem = AFRAME.scenes[0].systems["hubs-systems"].physicsSystem;
+    if (this.el.getAttribute("media-video") != null && typeof this.mediaVideoInitialized == "undefined") {
+      this.initializeMediaVideo();
+    }
+
+    // Check if floaty object is currently held by user and that it is of type media-video
+    if (this.el.getAttribute("media-video") != null && this.mediaVideoInitialized && isHeld) {
+      //this.currentTick = this.currentTick + 1;
+      // Every 15th tick check if video object is nearby snap-object
+      // if (this.currentTick % 15 == 0) {
+      //   this.scanSnapObjects();
+      // }
+      // if (this.currentTick > 100000) {
+      //   this.currentTick = 0;
+      // }
+      const coll = physicsSystem.getCollisions(this.el.components["body-helper"].uuid);
+      if (coll.length > 0) {
+        for (let bodyHelperID of coll) {
+          const collision_Element = physicsSystem.bodyUuidToData.get(bodyHelperID).object3D.el;
+          if (collision_Element.object3D.name.substring(0, 10).toLowerCase() == "snapobject") {
+            this.updateSnapTarget(collision_Element);
+          }
+        }
+      }
+      if (coll.length === 0 || !coll.includes(this.currentSnapTarget.components["body-helper"].uuid)) {
+        this.clearSnapTarget();
+      }
+    }
+
     if (isHeld && !this.wasHeld) {
       this.onGrab();
+      //--------------------CUSTOM-------------------------
+      // If media video, clear snap target if there is any
+      if (this.el.getAttribute("media-video") != null) {
+        this.snapped = false;
+        this.clearSnapTarget();
+        this.el.object3D.scale.set(1, 1, 1);
+      }
+      //---------------------------------------------------
     }
     if (this.wasHeld && !isHeld) {
+      //-----------------------CUSTOM------------------
+      this.snapIfPossible();
+      //--------------------------------------------
       this.onRelease();
     }
 
@@ -125,14 +284,34 @@ AFRAME.registerComponent("floaty-object", {
   },
 
   onGrab() {
-    this.el.setAttribute("body-helper", {
-      gravity: { x: 0, y: 0, z: 0 },
-      collisionFilterMask: COLLISION_LAYERS.HANDS
-    });
-    this.setLocked(false);
+    if (this.el.getAttribute("media-video") != null) {
+      this.el.setAttribute("body-helper", {
+        gravity: { x: 0, y: 0, z: 0 },
+        collisionFilterMask: COLLISION_LAYERS.INTERACTABLES,
+        collisionFilterGroup: COLLISION_LAYERS.INTERACTABLES,
+        disableCollision: true
+      });
+      console.log(this.el.components["body-helper"]);
+      console.log(this.snapObjects[0].components["body-helper"]);
+      this.setLocked(false);
+      this.el.object3D.updateMatrix();
+    } else {
+      this.el.setAttribute("body-helper", {
+        gravity: { x: 0, y: 0, z: 0 },
+        collisionFilterMask: COLLISION_LAYERS.INTERACTABLES
+      });
+      console.log("test");
+      this.setLocked(false);
+    }
   },
 
   remove() {
+    if (this.el.getAttribute("media-video") != null) {
+      if (this.snapped) {
+        this.clearSnapTarget();
+        this.snapped = false;
+      }
+    }
     if (this.stuckTo) {
       const stuckTo = this.stuckTo;
       delete this.stuckTo;

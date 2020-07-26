@@ -6,21 +6,17 @@ AFRAME.registerComponent("sticky-object", {
 
   init() {
     this.currentSnapTarget = null;
-    // Used to directly find out which targets are within the scene, is probably not needed with
-    // an implementation based on physics system
-    const media_loaders = AFRAME.scenes[0].querySelectorAll("[media-loader]");
-    this.snapObjects = [];
-    for (let i = 0; i < media_loaders.length; i++) {
-      // If the object to snap onto has a 3D object
-      if (media_loaders[i].object3D != null) {
-        // Check if object is of the desired type
-        if (media_loaders[i].object3D.name.substring(0, 10).toLowerCase() == "snapobject") {
-          this.snapObjects.push(media_loaders[i]);
-        }
-      }
-    }
 
-    this.el.updateComponent("floaty-object", { gravitySpeedLimit: 0 });
+    const physicsSystem = this.el.sceneEl.systems["hubs-systems"].physicsSystem;
+
+    this.el.updateComponent("body-helper", {
+      gravity: { x: 0, y: 0, z: 0 },
+      collisionFilterMask: COLLISION_LAYERS.UNOWNED_INTERACTABLE,
+      collisionFilterGroup: COLLISION_LAYERS.UNOWNED_INTERACTABLE,
+      disableCollision: true
+    });
+    physicsSystem.activateBody(this.el.components["body-helper"].uuid);
+    this.el.updateComponent("floaty-object", { gravitySpeedLimit: 0, autoLockOnRelease: true });
     this.initialized = true;
   },
   snapIfPossible() {
@@ -40,10 +36,20 @@ AFRAME.registerComponent("sticky-object", {
           }
         }
       }
-      if (coll.length === 0 || !coll.includes(this.currentSnapTarget.components["body-helper"].uuid)) {
+      if (
+        coll.length === 0 ||
+        this.currentSnapTarget == null ||
+        !coll.includes(this.currentSnapTarget.components["body-helper"].uuid)
+      ) {
         this.clearSnapTarget();
       }
     }
+  },
+  setLocked(locked) {
+    if (this.el.components.networked && !NAF.utils.isMine(this.el)) return;
+
+    this.locked = locked;
+    this.el.setAttribute("body-helper", { type: locked ? "kinematic" : "dynamic" });
   },
   snap(toSnap, snapOn) {
     // Align rotation
@@ -58,16 +64,16 @@ AFRAME.registerComponent("sticky-object", {
     this.currentSnapTarget.object3DMap.mesh.material.opacity = 0;
   },
   clearSnapTarget() {
-    if (this.currentSnapTarget != 0) {
+    if (this.currentSnapTarget != null) {
       this.currentSnapTarget.object3DMap.mesh.material.opacity = 1;
-      this.currentSnapTarget = 0;
+      this.currentSnapTarget = null;
     }
   },
   updateSnapTarget(closestObject) {
     // Check if closest object already is colored
     if (this.currentSnapTarget != closestObject) {
       // If not, empty list of colored objects, since there should be only one colored object
-      if (this.currentSnapTarget != 0) {
+      if (this.currentSnapTarget != null) {
         this.currentSnapTarget.object3DMap.mesh.material.opacity = 1;
       }
       // Mark closest object by changing its opacity
@@ -82,5 +88,43 @@ AFRAME.registerComponent("sticky-object", {
     const interaction = AFRAME.scenes[0].systems.interaction;
     const isHeld = interaction && interaction.isHeld(this.el);
     const physicsSystem = AFRAME.scenes[0].systems["hubs-systems"].physicsSystem;
+
+    const collisions = physicsSystem.getCollisions(this.bodyHelper.uuid);
+    if (collisions.length > 0) {
+      for (let bodyHelperID of collisions) {
+        const collision_Element = physicsSystem.bodyUuidToData.get(bodyHelperID).object3D.el;
+        if (collision_Element.object3D.name.substring(0, 10).toLowerCase() == "snapobject") {
+          this.updateSnapTarget(collision_Element);
+        }
+      }
+    }
+    if (
+      collisions.length === 0 ||
+      this.currentSnapTarget == null ||
+      !collisions.includes(this.currentSnapTarget.components["body-helper"].uuid)
+    ) {
+      this.clearSnapTarget();
+    }
+
+    if (isHeld && !this.wasHeld) {
+      this.snapped = false;
+      this.clearSnapTarget();
+
+      if (this.data.resetScaleWhenGrabbed) this.el.object3D.scale.set(1, 1, 1);
+    }
+
+    if (this.wasHeld && !isHeld) {
+      this.snapIfPossible();
+      this.setLocked(true);
+    }
+
+    this.wasHeld = isHeld;
+  },
+
+  remove() {
+    if (this.snapped) {
+      this.clearSnapTarget();
+      this.snapped = false;
+    }
   }
 });
